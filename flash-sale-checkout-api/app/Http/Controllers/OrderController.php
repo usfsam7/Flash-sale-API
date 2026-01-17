@@ -17,11 +17,6 @@ class OrderController extends Controller
             'hold_id' => ['required', 'integer', 'exists:holds,id'],
         ]);
 
-        // $user = $request->user();
-        // if (! $user) {
-        //     return response()->json(['message' => 'Unauthenticated.'], 401);
-        // }
-
         return DB::transaction(function () use ($data) {
             // Lock the hold row so concurrent requests can't both consume it.
             $hold = Hold::where('id', $data['hold_id'])->lockForUpdate()->first();
@@ -29,10 +24,6 @@ class OrderController extends Controller
             if (! $hold) {
                 return response()->json(['message' => 'Hold not found.'], 404);
             }
-
-            // if ($hold->user_id !== $user->id) {
-            //     return response()->json(['message' => 'Forbidden.'], 403);
-            // }
 
             if ($hold->released || ($hold->expires_at && $hold->expires_at->isPast())) {
                 return response()->json(['message' => 'Hold expired or released.'], 422);
