@@ -9,9 +9,17 @@ use App\Models\Product;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Database\QueryException;
+use App\Services\Payments\PaymentStrategyRegistry;
 
 class PaymentController extends Controller
 {
+    private PaymentStrategyRegistry $strategies;
+
+    public function __construct(PaymentStrategyRegistry $strategies)
+    {
+        $this->strategies = $strategies;
+    }
+
     public function __invoke(Request $request)
     {
         $data = $request->validate([
@@ -65,13 +73,10 @@ class PaymentController extends Controller
                     }
 
                     if ($payment->status === 'success') {
-                        $qty = $order->quantity;
-                        $updated = DB::table('products')
-                            ->where('id', $order->product_id)
-                            ->where('stock', '>=', $qty)
-                            ->decrement('stock', $qty);
+                        // Delegate to payment strategy registry
+                        $applied = $this->strategies->applyBest($payment, $order);
 
-                        if (! $updated) {
+                        if (! $applied) {
                             $order->status = 'cancelled';
                             $order->save();
 
@@ -86,13 +91,6 @@ class PaymentController extends Controller
 
                             return response()->json(['status' => 'cancelled', 'reason' => 'insufficient_stock'], 422);
                         }
-
-                        $order->status = 'paid';
-                        $order->save();
-
-                        $payment->order_id = $order->id;
-                        $payment->applied = true;
-                        $payment->save();
 
                         return response()->json(['status' => 'paid'], 200);
                     }

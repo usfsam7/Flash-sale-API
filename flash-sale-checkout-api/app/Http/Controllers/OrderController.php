@@ -8,9 +8,17 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use App\Models\Payment;
+use App\Services\Payments\PaymentStrategyRegistry;
 
 class OrderController extends Controller
 {
+    private PaymentStrategyRegistry $strategies;
+
+    public function __construct(PaymentStrategyRegistry $strategies)
+    {
+        $this->strategies = $strategies;
+    }
+
     public function store(Request $request)
     {
         $data = $request->validate([
@@ -60,14 +68,10 @@ class OrderController extends Controller
                         ->first();
 
             if ($pending) {
-                // attempt to atomically decrement stock; if fails, cancel order & release hold
-                $qty = $order->quantity;
-                $updated = DB::table('products')
-                    ->where('id', $order->product_id)
-                    ->where('stock', '>=', $qty)
-                    ->decrement('stock', $qty);
+                // delegate payment application to the strategy registry
+                $applied = $this->strategies->applyBest($pending, $order);
 
-                if (! $updated) {
+                if (! $applied) {
                     $order->status = 'cancelled';
                     $order->save();
 
@@ -80,13 +84,6 @@ class OrderController extends Controller
 
                     return response()->json(['message' => 'Insufficient stock, order cancelled'], 422);
                 }
-
-                $order->status = 'paid';
-                $order->save();
-
-                $pending->order_id = $order->id;
-                $pending->applied = true;
-                $pending->save();
             }
 
             return response()->json($order, 201);
