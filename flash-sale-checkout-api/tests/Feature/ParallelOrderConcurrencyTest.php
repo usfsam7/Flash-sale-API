@@ -39,36 +39,50 @@ class ParallelOrderConcurrencyTest extends TestCase
             'used' => false,
         ]);
 
-        // start a local server bound to our app with environment pointing at the same sqlite file
-        $server = new Process(
-            ['php', 'artisan', 'serve', '--host=127.0.0.1', '--port=9512'],
-            null, // cwd
-            [
-                'DB_CONNECTION' => 'sqlite',
-                'DB_DATABASE' => $dbFile,
-                'APP_ENV' => 'testing',
-            ],
-            null, // input
-            120 // timeout
-        );
-        $server->start();
+        // Allow reusing an already-running server for faster/local debugging.
+        $skipServer = (bool) getenv('PAR_TEST_SKIP_SERVER');
+        $baseUri = getenv('PAR_TEST_BASE') ?: 'http://127.0.0.1:9512';
+
+        $server = null;
+        if (! $skipServer) {
+            // start a local server bound to our app with environment pointing at the same sqlite file
+            $server = new Process(
+                ['php', 'artisan', 'serve', '--host=127.0.0.1', '--port=9512'],
+                null, // cwd
+                [
+                    'DB_CONNECTION' => 'sqlite',
+                    'DB_DATABASE' => $dbFile,
+                    'APP_ENV' => 'testing',
+                ],
+                null, // input
+                120 // timeout
+            );
+            $server->start();
+        }
 
         // wait for server to boot (longer wait)
         $started = false;
         $tries = 0;
-        while ($tries++ < 60) {
+        while ($tries++ < 120) {
             try {
-                $r = @file_get_contents('http://127.0.0.1:9512/');
+                $r = @file_get_contents(rtrim($baseUri, '/') . '/');
                 $started = true;
                 break;
             } catch (\Throwable $e) {
                 usleep(200_000);
             }
         }
-        $this->assertTrue($started, 'Server failed to start in time. Server output: '.$server->getErrorOutput()."\n".$server->getOutput());
+
+        if (! $started) {
+            $serverOut = sys_get_temp_dir().'/parallel_server_out_'.uniqid().'.log';
+            if ($server) {
+                file_put_contents($serverOut, "OUT:\n".$server->getOutput()."\nERR:\n".$server->getErrorOutput());
+            }
+            $this->fail('Server failed to start in time. Server log: '.$serverOut);
+        }
 
         // run two concurrent requests against /api/orders using Guzzle async
-        $client = new Client(['base_uri' => 'http://127.0.0.1:9512', 'http_errors' => false]);
+        $client = new Client(['base_uri' => rtrim($baseUri, '/'), 'http_errors' => false]);
 
         $promises = [
             $client->postAsync('/api/orders', ['json' => ['hold_id' => $hold->id]]),
@@ -107,8 +121,10 @@ class ParallelOrderConcurrencyTest extends TestCase
         $this->assertDatabaseCount('orders', 1);
         $this->assertDatabaseHas('holds', ['id' => $hold->id, 'used' => true]);
 
-        // stop server and cleanup
-        $server->stop(1);
+        // stop server (only if we started it here) and cleanup
+        if ($server) {
+            $server->stop(1);
+        }
         if (file_exists($dbFile)) {
             @unlink($dbFile);
         }
